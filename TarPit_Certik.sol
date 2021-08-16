@@ -186,12 +186,11 @@ abstract contract Ownable is Context {
 contract TarPit is Ownable {
     
     IERC20 public immutable DINO;
-    uint256 public multiplier;
-    uint256 public minDuration;
-    uint256 public maxDuration;
-    uint256 constant avgBlocksPerYear = 31536000;
+    uint256 constant secondsPerYear = 31536000;
+    uint256 public stakedDinos;
 
     mapping(address => TokenLock[]) public locks;
+    mapping(uint8 => LockingPeriod) public lockingPeriods;
 
     struct TokenLock {
         uint256 amount;
@@ -200,33 +199,36 @@ contract TarPit is Ownable {
         bool claimed;
     }
 
+    struct LockingPeriod {
+        uint256 duration;
+        uint256 multiplier;
+    }
+
     event Locked (address indexed _of, uint256 _amount, uint256 _reward, uint256 _validity);
     event Unlocked (address indexed _of, uint256 _amount);
     event EmergencyUnlocked (address indexed _of, uint256 _amount);
 
-    constructor(IERC20 _DINO, uint256 _multiplier, uint256 _minDuration, uint256 _maxDuration) {
+    constructor(IERC20 _DINO) {
         DINO = _DINO;
-        multiplier = _multiplier;
-        minDuration = _minDuration;
-        maxDuration = _maxDuration;
         
     }
 
     /**
      * @dev Locks a specified amount of tokens against an address,
-     *      for a specified time
-     * @param _amount Number of tokens to be locked
-     * @param _time Lock time in seconds
+     *      for a specified time.
+     * @param _amount Number of tokens to be locked.
+     * @param _lockingPeriod Identifier of locking period.
      */
-    function lock(uint256 _amount, uint256 _time) external returns (bool) {
+    function lock(uint256 _amount, uint8 _lockingPeriod) external returns (bool) {
         require(_amount != 0, "Amount must not be zero.");
-        require(_time <= maxDuration, "Lock exceeds maximum duration.");
-        require(_time >= minDuration, "Locking period is too short.");
-        uint256 validUntil = block.timestamp + _time;
-        uint256 lockMultiplier = multiplier * _time * 1e10 / avgBlocksPerYear;            // 1 year (31536000) = 100% multiplier
-        uint256 lockReward = lockMultiplier * _amount * _time / avgBlocksPerYear / 1e12;  // 1 year (31536000) = 100% rewards
+        require(lockingPeriods[_lockingPeriod].duration != 0 && lockingPeriods[_lockingPeriod].multiplier != 0, "Invalid locking period.");
+        uint256 duration = lockingPeriods[_lockingPeriod].duration;
+        uint256 validUntil = block.timestamp + duration;
+        uint256 lockMultiplier = lockingPeriods[_lockingPeriod].multiplier;
+        uint256 lockReward = (lockMultiplier * _amount / 1000) * duration / secondsPerYear;  // 1 year (31536000) = 100% rewards
 
         DINO.transferFrom(msg.sender, address(this), _amount);
+        stakedDinos += _amount + lockReward;
         locks[msg.sender].push(TokenLock(_amount, validUntil, lockReward, false));
 
         emit Locked(msg.sender, _amount, lockReward, validUntil);
@@ -235,20 +237,21 @@ contract TarPit is Ownable {
     
     /**
      * @dev Transfers and locks a specified amount of tokens,
-     *      for a specified time
-     * @param _to Address to which tokens are to be transferred
-     * @param _amount Number of tokens to be transferred and locked
-     * @param _time Lock time in seconds
+     *      for a specified time.
+     * @param _to Address to which tokens are to be transferred.
+     * @param _amount Number of tokens to be transferred and locked.
+     * @param _lockingPeriod Identifier of locking period.
      */
-    function transferWithLock(address _to, uint256 _amount, uint256 _time) external returns (bool) {
+    function transferWithLock(address _to, uint256 _amount, uint8 _lockingPeriod) external returns (bool) {
         require(_amount != 0, "Amount must not be zero.");
-        require(_time <= maxDuration, "Lock exceeds maximum duration.");
-        require(_time >= minDuration, "Locking period is too short.");
-        uint256 validUntil = block.timestamp + _time;
-        uint256 lockMultiplier = multiplier * _time * 1e10 / avgBlocksPerYear;           // 1 year (31536000) = 100% multiplier
-        uint256 lockReward = lockMultiplier * _amount * _time / avgBlocksPerYear / 1e12; // 1 year (31536000) = 100% rewards
+        require(lockingPeriods[_lockingPeriod].duration != 0 && lockingPeriods[_lockingPeriod].multiplier != 0, "Invalid locking period.");
+        uint256 duration = lockingPeriods[_lockingPeriod].duration;
+        uint256 validUntil = block.timestamp + duration;
+        uint256 lockMultiplier = lockingPeriods[_lockingPeriod].multiplier;
+        uint256 lockReward = (lockMultiplier * _amount / 1000) * duration / secondsPerYear; // 1 year (31536000) = 100% rewards
 
         DINO.transferFrom(msg.sender, address(this), _amount);
+        stakedDinos += _amount + lockReward;
         locks[_to].push(TokenLock(_amount, validUntil, lockReward, false));
 
         emit Locked(_to, _amount, lockReward, validUntil);
@@ -256,8 +259,8 @@ contract TarPit is Ownable {
     }
   
     /**
-     * @dev Gets the unlockable tokens of a specified address
-     * @param _of The address to query the the unlockable token count of
+     * @dev Gets the unlockable tokens of a specified address.
+     * @param _of The address to query the the unlockable token count of.
      */
     function getUnlockableTokens(address _of) public view returns (uint256) {
         uint256 unlockableTokens;
@@ -271,8 +274,8 @@ contract TarPit is Ownable {
     }    
     
     /**
-     * @dev Gets the locked tokens of a specified address
-     * @param _of The address to query the the locked token count of
+     * @dev Gets the locked tokens of a specified address.
+     * @param _of The address to query the the locked token count of.
      */
     function getLockedTokens(address _of) public view returns (uint256) {
         uint256 lockedTokens;
@@ -286,8 +289,8 @@ contract TarPit is Ownable {
     }   
 
     /**
-     * @dev Unlocks the unlockable tokens of a specified address
-     * @param _of Address of user, claiming back unlockable tokens
+     * @dev Unlocks the unlockable tokens of a specified address.
+     * @param _of Address of user, claiming back unlockable tokens.
      */
     function unlock(address _of) external returns (uint256) {
         uint256 unlockableTokens;
@@ -301,6 +304,7 @@ contract TarPit is Ownable {
 
         if (unlockableTokens > 0) {
             DINO.transfer(_of, unlockableTokens);
+            stakedDinos -= unlockableTokens;
             emit Unlocked(_of, unlockableTokens);
         }
         return unlockableTokens;
@@ -321,28 +325,29 @@ contract TarPit is Ownable {
         
         if (unlockableTokens > 0) {
             DINO.transfer(msg.sender, unlockableTokens);
+            stakedDinos -= unlockableTokens;
             emit EmergencyUnlocked(msg.sender, unlockableTokens);
         }
         return unlockableTokens;
     }
     
     /**
-     * @dev Change multiplier for rewards.
-     * @param _multiplier Value of new multiplier (x / 1e2).
+     * @dev Set duration and multiplier of a specific locking period.
+     * @param _lockingPeriod Identifier of the locking period.
+     * @param _duration Duration of locking period.
+     * @param _multiplier Multiplier of locking period.
      */
-    function setMultiplier(uint256 _multiplier) external onlyOwner {
-        multiplier = _multiplier;
+    function setLockingPeriod(uint8 _lockingPeriod, uint256 _duration, uint256 _multiplier) external onlyOwner {
+        lockingPeriods[_lockingPeriod].duration = _duration;
+        lockingPeriods[_lockingPeriod].multiplier = _multiplier; 
     }
     
     /**
-     * @dev Change minimum and maximum lock durations.
-     * @param _minDuration Value of minimum lock duration.
-     * @param _maxDuration Value of maximum lock duration.
+     * @dev Transfer DINO tokens.
+     * @return Success.
      */
-    function setLockDuration(uint256 _minDuration, uint256 _maxDuration) public onlyOwner {
-        require(_minDuration < _maxDuration, "Maximum lock duration has to exceed minimum lock duration!");
-        minDuration = _minDuration;
-        maxDuration = _maxDuration;
+    function emergencyTransfer(address to) external onlyOwner returns (bool) {
+        return DINO.transfer(to, DINO.balanceOf(address(this)) - stakedDinos);
     }
-
+    
 }
